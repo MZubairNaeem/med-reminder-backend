@@ -1,7 +1,12 @@
-import { initializeApp, applicationDefault } from 'firebase-admin/app';
-import { getMessaging } from 'firebase-admin/messaging';
-import express from 'express';
-import cors from 'cors';
+const serviceAccount = require("./minder-alert-firebase-adminsdk-ucw60-12ee8b5205.json");
+const { getMessaging } = require('firebase-admin/messaging');   
+const schedule = require('node-schedule');
+const admin = require('firebase-admin');
+const express = require('express');
+const axios = require('axios');
+const cors = require('cors');
+const PORT = 3000;
+
 
 const app = express();
 app.use(express.json());
@@ -18,15 +23,17 @@ app.use(function (req, res, next) {
   next();
 });
 
-// Initialize Firebase Admin SDK
-initializeApp({
-  credential: applicationDefault(),
-  projectId: 'minder-alert',
+
+
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
 });
 
 // Handle POST requests to /send
 app.post('/send', async function (req, res) {
   try {
+    const title = req.body.title;
+    const body = req.body.body;
     const receivedToken = "dX2ttUPzR_W-1zTpL_i1w7:APA91bE2LInMj9LfEK6uYmroS92S-ARY7Ajzs_yV0JXscnFVgb-LMRiwGmk2vmdZnTe2QpZsaCl3PNPKSkhwpaqY_UGwkNXqT2PNKvtVNEhKB7VocIH4qvoFK8_IdRhBYyM0nBXeN9Wa";
     console.log('receivedToken', receivedToken);
     
@@ -38,8 +45,8 @@ app.post('/send', async function (req, res) {
 
     const message = {
       notification: {
-        title: 'Notif',
-        body: 'This is a Test Notification',
+        title: title,
+        body: body,
       },
       token: receivedToken,
     };
@@ -56,35 +63,30 @@ app.post('/send', async function (req, res) {
     console.error('Error sending message:', error);
 
     res.status(500).json({
-      error: 'Internal Server Error',
+      error: error.message,
     });
   }
 });
 
 
-const interval = 10 * 1000; // 60 seconds * 1000 milliseconds
-setInterval(async () => {
-  try {
-    // Assuming your server is running on localhost:3000
-    const apiUrl = 'http://localhost:3000/send';
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      // Additional request parameters if needed...
-    });
+const scheduledJob = schedule.scheduleJob('* * * * *', async () => {
 
-    const result = await response.json();
-    console.log('API Response:', result);
+console.log('Running scheduled job');
+  // You can make an HTTP request to your API endpoint here
+  try {
+    const response = await axios.post('http://localhost:3000/send', {
+      title: 'Test Notification',
+      body: 'This is a Test Notification',
+    });
+    console.log('Successfully called API:', response.data);
   } catch (error) {
-    console.error('Error calling API:', error);
+    console.error('Error calling API:', error.message);
   }
-}, interval);
+});
+
 
 
 // Start the server
-const PORT = 3000;
 app.listen(PORT, function () {
   console.log(`Server started on port ${PORT}`);
 });
