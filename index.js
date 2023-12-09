@@ -1,90 +1,204 @@
 const serviceAccount = require("./minder-alert-firebase-adminsdk-ucw60-12ee8b5205.json");
-const { getMessaging } = require('firebase-admin/messaging');   
-const schedule = require('node-schedule');
-const admin = require('firebase-admin');
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
+const { getMessaging } = require("firebase-admin/messaging");
+const { Firestore } = require("@google-cloud/firestore");
+const schedule = require("node-schedule");
+const moment = require('moment-timezone');
+const admin = require("firebase-admin");
+const express = require("express");
+const cors = require("cors");
+const app = express();
 const PORT = 3000;
 
+const firestore = new Firestore({
+  projectId: "minder-alert",
+  keyFilename: "./minder-alert-firebase-adminsdk-ucw60-12ee8b5205.json",
+});
 
-const app = express();
 app.use(express.json());
 
 // Enable CORS
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'DELETE', 'UPDATE', 'PUT', 'PATCH'],
-}));
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "DELETE", "UPDATE", "PUT", "PATCH"],
+  })
+);
 
 // Set Content-Type header
 app.use(function (req, res, next) {
-  res.setHeader('Content-Type', 'application/json');
+  res.setHeader("Content-Type", "application/json");
   next();
 });
 
-
-
 admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount),
 });
 
-// Handle POST requests to /send
-app.post('/send', async function (req, res) {
+const scheduledJob = schedule.scheduleJob('*/10 * * * * *', async () => {
+  console.log("Running scheduled job");
+
   try {
-    const title = req.body.title;
-    const body = req.body.body;
-    const receivedToken = "dX2ttUPzR_W-1zTpL_i1w7:APA91bE2LInMj9LfEK6uYmroS92S-ARY7Ajzs_yV0JXscnFVgb-LMRiwGmk2vmdZnTe2QpZsaCl3PNPKSkhwpaqY_UGwkNXqT2PNKvtVNEhKB7VocIH4qvoFK8_IdRhBYyM0nBXeN9Wa";
-    console.log('receivedToken', receivedToken);
-    
-    if (!receivedToken) {
-      return res.status(400).json({
-        error: 'Invalid request. Missing FCM token.',
+    const currentTime = new Date();
+    const formattedTime = moment(currentTime).tz('Asia/Karachi').format('YYYY-MM-DDTHH:mm:ss.SSS[Z]');
+
+    const users = await getUsersData();
+
+    // process appointments for each user
+    await Promise.all(users.map(async (user) => {
+      const appointments = await getAppointment(user.uid, false, formattedTime);
+
+      appointments.forEach(async (appointment) => {
+        const appointmentTime = moment(appointment.data.appointmentDateTime.toDate())
+        .tz('Asia/Karachi')
+        .toDate();
+      
+      const timeThreshold = 1 * 60 * 1000; 
+      
+      if (Math.abs(currentTime - appointmentTime) < timeThreshold) {
+          const title = 'Appointment Reminder';
+          const body = `Your appointment with ${appointment.data.doctorName} is scheduled at ${appointmentTime}`;
+          const message = {
+            notification: {
+              title: title,
+              body: body,
+            },
+            token: user.fcm,
+            android: {
+              notification: {
+                sound: 'default',
+              },
+              priority: 'high',
+            },
+          };
+          const response = await getMessaging().send(message);
+          console.log("Successfully sent message:", response);
+        } else {
+          console.log(`Not sending notification for user ${user.uid}. Appointment time not reached.`);
+        }
       });
+
+
+      // process medication schedules for each user
+      const medSchedules = await getMedSchedules(user.uid, false, formattedTime);
+      medSchedules.forEach(async (medSchedule) => {
+        const medName = medSchedule.data.medName.toString();
+        const scheduledTime = moment(medSchedule.data.time.toDate())
+        .tz('Asia/Karachi')
+        .toDate();
+        const timeThreshold = 1 * 60 * 1000; 
+
+        if (Math.abs(currentTime - scheduledTime) < timeThreshold) {
+          const title = 'Medication Reminder';
+          const body = `It's time to take your ${medName}`;
+          const message = {
+            notification: {
+              title: title,
+              body: body,
+            },
+            token: user.fcm,
+          };
+          const response = await getMessaging().send(message);
+          console.log("Successfully sent message:", response);
+        } else {
+          console.log(`Not sending notification for user ${user.uid}. Medication time not reached.`);
+        }
+      });
+    }));
+  } catch (error) {
+    console.error("Error:", error.message);
+  }
+});
+
+
+const collectionNameMed = "medSchedule";
+
+async function getMedSchedules( uid, status, time) {
+  try {
+    const dateObject = new Date(time);
+    const currenttime = admin.firestore.Timestamp.fromDate(dateObject);
+    const collectionRef = firestore.collection(collectionNameMed).where("uid", "==", uid).where("status", "==", status).where("time", "<=", currenttime);
+    const snapshot = await collectionRef.get();
+
+    if (snapshot.empty) {
+      console.log("No documents found in the collection.");
+      return [];
     }
 
-    const message = {
-      notification: {
-        title: title,
-        body: body,
-      },
-      token: receivedToken,
-    };
-
-    const response = await getMessaging().send(message);
-
-    console.log('Successfully sent message:', response);
-
-    res.status(200).json({
-      message: 'Successfully sent message',
-      token: receivedToken,
+    const medSchedules = [];
+    snapshot.forEach((doc) => {
+      medSchedules.push({
+        id: doc.id,
+        data: doc.data(),
+      });
     });
+
+    return medSchedules;
   } catch (error) {
-    console.error('Error sending message:', error);
-
-    res.status(500).json({
-      error: error.message,
-    });
+    console.error("Error getting documents from collection:", error);
+    throw error;
   }
-});
+}
 
 
-const scheduledJob = schedule.scheduleJob('* * * * *', async () => {
+const collectionNameAppoinment = "appointments";
 
-console.log('Running scheduled job');
-  // You can make an HTTP request to your API endpoint here
+async function getAppointment(uid, status, time) {
   try {
-    const response = await axios.post('http://localhost:3000/send', {
-      title: 'Test Notification',
-      body: 'This is a Test Notification',
+    const dateObject = new Date(time);
+    const currenttime = admin.firestore.Timestamp.fromDate(dateObject);
+    const collectionRef = firestore.collection(collectionNameAppoinment).where("uid", "==", uid).where("status", "==", status).where("appointmentDateTime", "<=", currenttime);
+    const snapshot = await collectionRef.get();
+
+    if (snapshot.empty) {
+      console.log("No documents found in the collection.");
+      return [];
+    }
+
+    const appointment = [];
+    snapshot.forEach((doc) => {
+      appointment.push({
+        id: doc.id,
+        data: doc.data(),
+      });
     });
-    console.log('Successfully called API:', response.data);
+
+    return appointment;
   } catch (error) {
-    console.error('Error calling API:', error.message);
+    console.error("Error getting documents from collection:", error);
+    throw error;
   }
-});
+}
 
 
+const collectionNameUser = 'users';
+
+async function getUsersData() {
+  try {
+    const collectionRef = firestore.collection(collectionNameUser);
+    const snapshot = await collectionRef.get();
+
+    if (snapshot.empty) {
+      console.log('No documents found in the collection.');
+      return [];
+    }
+
+    const usersList = [];
+    snapshot.forEach((doc) => {
+      const userData = doc.data();
+      // Assuming 'fcmToken' and 'uid' are fields in your user documents
+      const { fcm, uid } = userData;
+      
+      if (fcm && uid) {
+        usersList.push({ fcm, uid });
+      }
+    });
+    // console.log('usersList', usersList);
+    return usersList;
+  } catch (error) {
+    console.error('Error getting documents from collection:', error);
+    throw error;
+  }
+}
 
 // Start the server
 app.listen(PORT, function () {
