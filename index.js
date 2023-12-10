@@ -34,7 +34,7 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 
-const scheduledJob = schedule.scheduleJob('*/10 * * * * *', async () => {
+const scheduledJob = schedule.scheduleJob('*/60 * * * * *', async () => {
   console.log("Running scheduled job");
 
   try {
